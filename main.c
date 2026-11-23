@@ -27,6 +27,8 @@ typedef struct produto{
 
 typedef struct item_venda{
     int codigo_produto;
+    char nome[TAM_NOME];
+    char categoria[TAM_CATEGORIA];
     int quantidade;
     double preco_unitario;
     double preco_custo;
