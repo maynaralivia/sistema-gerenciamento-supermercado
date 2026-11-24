@@ -14,6 +14,7 @@
 #define VENDA_CONCLUIDA 1
 #define VENDA_CANCELADA 0
 #define TAM_DATA 11   // "DD/MM/AAAA" = 10 caracteres + '\0'
+#define LIMITE_VALOR_PAGO 1000000000.0
 
 typedef struct produto{ 
     int codigo;
