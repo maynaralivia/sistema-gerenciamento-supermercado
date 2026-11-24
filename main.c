@@ -1179,7 +1179,7 @@ void menuVendas(venda **vendas, int *total_vendas, int *capacidade_vendas,
 }
 
 
-// SUBMENU DA PARTE 2 (SIMPLIFICADO)
+// SUBMENU DA PARTE 3 (SIMPLIFICADO)
 
 void menuRelatorios() {
     int opcao;
