@@ -711,7 +711,7 @@ void menuEstoque(produto *produtos, int total_produtos) {
         }
     } while (opcao != 0);
 }
-// SUBMENUS DA PARTE 2 E 3 (SIMPLIFICADOS)
+// FUNCOES DA PARTE 2
 void menuVendas() {
     int opcao;
     do {
@@ -734,6 +734,8 @@ void menuVendas() {
         }
     } while (opcao != 0);
 }
+
+// SUBMENU DA PARTE 2 (SIMPLIFICADO)
 
 void menuRelatorios() {
     int opcao;
