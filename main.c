@@ -712,7 +712,447 @@ void menuEstoque(produto *produtos, int total_produtos) {
     } while (opcao != 0);
 }
 // FUNCOES DA PARTE 2
-void menuVendas() {
+
+// Gera o codigo da proxima venda, maior codigo de venda existente + 1 (continua correto depois de carregar de arquivo)
+int proximoCodigoVenda(venda *vendas, int total_vendas) {
+    int maior = 0;
+    for (int i = 0; i < total_vendas; i++) {
+        if (vendas[i].codigo > maior) {
+            maior = vendas[i].codigo;
+        }
+    }
+    return maior + 1;
+}
+
+// Retorna o indice da venda no vetor ou -1 se nao encontrar
+int buscarIndiceVendaPorCodigo(venda *vendas, int total_vendas, int codigo) {
+    for (int i = 0; i < total_vendas; i++) {
+        if (vendas[i].codigo == codigo) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Arredonda para 2 casas decimais (evita erros de ponto flutuante no troco)
+double arredondarCentavos(double valor) {
+    return (long long)(valor * 100.0 + 0.5) / 100.0;
+}
+
+// Soma quantidade * preco de todos os itens (antes do desconto)
+double calcularSubtotal(const venda *v) {
+    double subtotal = 0.0;
+    for (int i = 0; i < v->contador_itens; i++) {
+        subtotal += v->itens[i].quantidade * v->itens[i].preco_unitario;
+    }
+    return subtotal;
+}
+
+// Imprime a nota fiscal em qualquer saida (stdout ou arquivo)
+void imprimirNotaFiscal(FILE *saida, const venda *v) {
+    char data[TAM_DATA];
+    char hora[6];
+    formatarData(v->data, data);
+    struct tm *info = localtime(&v->data);
+    strftime(hora, sizeof(hora), "%H:%M", info);
+
+    double subtotal = calcularSubtotal(v);
+
+    fprintf(saida, "==================================================================\n");
+    fprintf(saida, "                    NOTA FISCAL SIMPLIFICADA\n");
+    fprintf(saida, "==================================================================\n");
+    fprintf(saida, "Venda no: %d        Data: %s %s\n", v->codigo, data, hora);
+    fprintf(saida, "Status: %s\n", v->status == VENDA_CONCLUIDA ? "CONCLUIDA" : "CANCELADA");
+    fprintf(saida, "==================================================================\n");
+    fprintf(saida, "%-5s | %-24s | %5s | %10s | %10s\n", "COD", "PRODUTO", "QTD", "UNIT (R$)", "TOTAL (R$)");
+    fprintf(saida, "==================================================================\n");
+
+    for (int i = 0; i < v->contador_itens; i++) {
+        const item_venda *it = &v->itens[i];
+        fprintf(saida, "%-5d | %-24.24s | %5d | %10.2f | %10.2f\n",
+                it->codigo_produto, it->nome, it->quantidade,
+                it->preco_unitario, it->quantidade * it->preco_unitario);
+    }
+
+    fprintf(saida, "==================================================================\n");
+    fprintf(saida, "Subtotal:        R$ %10.2f\n", subtotal);
+    fprintf(saida, "Desconto (%.2f%%): R$ %10.2f\n", v->desconto, arredondarCentavos(subtotal - v->valor_total));
+    fprintf(saida, "TOTAL:           R$ %10.2f\n", v->valor_total);
+    fprintf(saida, "Valor pago:      R$ %10.2f\n", v->valor_pago);
+    fprintf(saida, "Troco:           R$ %10.2f\n", v->troco);
+    fprintf(saida, "==================================================================\n");
+}
+
+// Salva a nota em nota_venda_<codigo>.txt
+void salvarNotaFiscal(const venda *v) {
+    char nome_arquivo[64];
+    snprintf(nome_arquivo, sizeof(nome_arquivo), "nota_venda_%d.txt", v->codigo);
+
+    FILE *f = fopen(nome_arquivo, "w");
+    if (f == NULL) {
+        printf("Aviso: nao foi possivel salvar a nota fiscal em arquivo.\n");
+        return;
+    }
+    imprimirNotaFiscal(f, v);
+    fclose(f);
+    printf("Nota fiscal salva em \"%s\".\n", nome_arquivo);
+}
+
+// ---------- REGISTRAR VENDA ----------
+void registrarVenda(venda **vendas, int *total_vendas, int *capacidade_vendas,
+                    produto *produtos, int total_produtos) {
+    limpaTela();
+    desenhaBorda();
+    printf("       REGISTRAR VENDA\n");
+    desenhaBorda();
+
+    if (total_produtos == 0) {
+        printf("Nenhum produto cadastrado no sistema.\n");
+        pausar();
+        return;
+    }
+
+    // Garante espaco no vetor de vendas (dobra a capacidade se estiver cheio)
+    if (*total_vendas == *capacidade_vendas) {
+        int nova_capacidade = (*capacidade_vendas) * 2;
+        venda *temp = realloc(*vendas, nova_capacidade * sizeof(venda));
+        if (temp == NULL) {
+            printf("Erro: memoria insuficiente para registrar novas vendas.\n");
+            pausar();
+            return;
+        }
+        *vendas = temp;
+        *capacidade_vendas = nova_capacidade;
+    }
+
+    venda nova;
+    memset(&nova, 0, sizeof(venda));
+    nova.codigo = proximoCodigoVenda(*vendas, *total_vendas);
+    nova.contador_itens = 0;
+
+    printf("Venda no %d\n", nova.codigo);
+
+    // 1. Monta o carrinho (o estoque so e alterado na confirmacao)
+    while (1) {
+        int codigo = lerInteiro("\nCodigo do produto (0 para finalizar itens): ", 0, INT_MAX);
+        if (codigo == 0) {
+            break;
+        }
+
+        int idx = buscarIndiceProdutoPorCodigo(produtos, total_produtos, codigo);
+        if (idx == -1) {
+            printf("Produto com codigo %d nao encontrado.\n", codigo);
+            continue;
+        }
+
+        // Verifica se o produto ja esta no carrinho
+        int pos_item = -1;
+        for (int i = 0; i < nova.contador_itens; i++) {
+            if (nova.itens[i].codigo_produto == codigo) {
+                pos_item = i;
+                break;
+            }
+        }
+
+        int no_carrinho = (pos_item == -1) ? 0 : nova.itens[pos_item].quantidade;
+        int disponivel = produtos[idx].qtd_estoque - no_carrinho;
+
+        printf("Produto: %s | Preco: R$ %.2f | Disponivel: %d\n",
+               produtos[idx].nome, produtos[idx].preco_venda, disponivel);
+
+        if (disponivel <= 0) {
+            printf("Sem estoque disponivel para este produto.\n");
+            continue;
+        }
+        if (pos_item == -1 && nova.contador_itens >= MAX_ITENS) {
+            printf("Limite de %d itens diferentes por venda atingido.\n", MAX_ITENS);
+            continue;
+        }
+
+        int qtd = lerInteiro("Quantidade: ", 1, disponivel);
+
+        if (pos_item == -1) {
+            pos_item = nova.contador_itens;
+            nova.contador_itens++;
+            nova.itens[pos_item].codigo_produto = codigo;
+            nova.itens[pos_item].quantidade = qtd;
+            nova.itens[pos_item].preco_unitario = produtos[idx].preco_venda;
+            nova.itens[pos_item].preco_custo = produtos[idx].preco_custo;
+            snprintf(nova.itens[pos_item].nome, TAM_NOME, "%s", produtos[idx].nome);
+            snprintf(nova.itens[pos_item].categoria, TAM_CATEGORIA, "%s", produtos[idx].categoria);
+        } else {
+            nova.itens[pos_item].quantidade += qtd;
+        }
+
+        printf("Adicionado: %d x %s = R$ %.2f\n", qtd, produtos[idx].nome,
+               qtd * produtos[idx].preco_venda);
+    }
+
+    if (nova.contador_itens == 0) {
+        printf("\nNenhum item informado. Venda descartada.\n");
+        pausar();
+        return;
+    }
+
+    // 2. Desconto e total
+    double subtotal = calcularSubtotal(&nova);
+    printf("\nSubtotal: R$ %.2f\n", subtotal);
+    nova.desconto = lerDecimal("Desconto em % (0 a 100): ", 0.0, 100.0);
+    nova.valor_total = arredondarCentavos(subtotal * (1.0 - nova.desconto / 100.0));
+    printf("TOTAL A PAGAR: R$ %.2f\n", nova.valor_total);
+
+    // 3. Pagamento e troco
+    nova.valor_pago = lerDecimal("Valor pago pelo cliente (R$): ", nova.valor_total, LIMITE_VALOR_PAGO);
+    nova.troco = arredondarCentavos(nova.valor_pago - nova.valor_total);
+    printf("Troco: R$ %.2f\n", nova.troco);
+
+    // 4. Confirmacao
+    int confirma = lerInteiro("\nConfirmar venda? (1 - Sim / 2 - Nao): ", 1, 2);
+    if (confirma == 2) {
+        printf("\nVenda descartada. O estoque nao foi alterado.\n");
+        pausar();
+        return;
+    }
+
+    // 5. Verificacao final da disponibilidade de TODOS os itens antes de dar baixa
+    for (int i = 0; i < nova.contador_itens; i++) {
+        int idx = buscarIndiceProdutoPorCodigo(produtos, total_produtos, nova.itens[i].codigo_produto);
+        if (idx == -1 || produtos[idx].qtd_estoque < nova.itens[i].quantidade) {
+            printf("\nErro: estoque insuficiente para \"%s\". Venda nao realizada.\n", nova.itens[i].nome);
+            pausar();
+            return;
+        }
+    }
+
+    // 6. Da baixa no estoque, finaliza e guarda no historico
+    for (int i = 0; i < nova.contador_itens; i++) {
+        int idx = buscarIndiceProdutoPorCodigo(produtos, total_produtos, nova.itens[i].codigo_produto);
+        produtos[idx].qtd_estoque -= nova.itens[i].quantidade;
+    }
+
+    nova.data = time(NULL);
+    nova.status = VENDA_CONCLUIDA;
+
+    (*vendas)[*total_vendas] = nova;
+    (*total_vendas)++;
+
+    printf("\nVenda registrada com sucesso!\n\n");
+    imprimirNotaFiscal(stdout, &nova);
+    salvarNotaFiscal(&nova);
+
+    // Alertas de estoque dos produtos vendidos
+    for (int i = 0; i < nova.contador_itens; i++) {
+        int idx = buscarIndiceProdutoPorCodigo(produtos, total_produtos, nova.itens[i].codigo_produto);
+        if (produtos[idx].qtd_estoque == 0) {
+            printf("ALERTA: \"%s\" ficou com estoque ZERADO!\n", produtos[idx].nome);
+        } else if (produtos[idx].qtd_estoque <= produtos[idx].estoque_minimo) {
+            printf("ALERTA: \"%s\" ficou com estoque baixo (%d un., minimo %d).\n",
+                   produtos[idx].nome, produtos[idx].qtd_estoque, produtos[idx].estoque_minimo);
+        }
+    }
+
+    pausar();
+}
+
+// ---------- HISTORICO ----------
+void imprimirCabecalhoVendas() {
+    printf("=======================================================================\n");
+    printf("%-6s | %-16s | %-6s | %-9s | %-12s | %-10s\n",
+           "COD", "DATA/HORA", "ITENS", "DESCONTO", "TOTAL (R$)", "STATUS");
+    printf("=======================================================================\n");
+}
+
+void imprimirLinhaVenda(const venda *v) {
+    char data[TAM_DATA];
+    char hora[6];
+    formatarData(v->data, data);
+    struct tm *info = localtime(&v->data);
+    strftime(hora, sizeof(hora), "%H:%M", info);
+
+    char data_hora[20];
+    snprintf(data_hora, sizeof(data_hora), "%s %s", data, hora);
+
+    printf("%-6d | %-16s | %-6d | %8.2f%% | %12.2f | %-10s\n",
+           v->codigo, data_hora, v->contador_itens, v->desconto, v->valor_total,
+           v->status == VENDA_CONCLUIDA ? "CONCLUIDA" : "CANCELADA");
+}
+
+void listarVendas(venda *vendas, int total_vendas) {
+    limpaTela();
+    desenhaBorda();
+    printf("     HISTORICO DE VENDAS\n");
+    desenhaBorda();
+
+    if (total_vendas == 0) {
+        printf("Nenhuma venda registrada.\n");
+        pausar();
+        return;
+    }
+
+    imprimirCabecalhoVendas();
+    for (int i = 0; i < total_vendas; i++) {
+        imprimirLinhaVenda(&vendas[i]);
+    }
+    printf("=======================================================================\n");
+    printf("Total de vendas: %d\n", total_vendas);
+    pausar();
+}
+
+int diasNoMes(int mes, int ano) {
+    int dias[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    int bissexto = (ano % 4 == 0 && ano % 100 != 0) || (ano % 400 == 0);
+    if (mes == 2 && bissexto) {
+        return 29;
+    }
+    return dias[mes - 1];
+}
+
+// Le uma data DD/MM/AAAA valida e devolve normalizada em destino (tamanho TAM_DATA).
+// Retorna 1 se leu, 0 se a entrada acabou.
+int lerData(const char *mensagem, char destino[]) {
+    char texto[TAM_NOME];
+    int d, m, a;
+    char extra;
+
+    while (1) {
+        if (!lerTexto(mensagem, texto, TAM_NOME)) {
+            return 0;
+        }
+        if (sscanf(texto, "%d/%d/%d %c", &d, &m, &a, &extra) == 3 &&
+            a >= 1900 && a <= 9999 && m >= 1 && m <= 12 &&
+            d >= 1 && d <= diasNoMes(m, a)) {
+            snprintf(destino, TAM_DATA, "%02d/%02d/%04d", d, m, a);
+            return 1;
+        }
+        printf("Erro: data invalida. Use o formato DD/MM/AAAA.\n");
+    }
+}
+
+void consultarVenda(venda *vendas, int total_vendas) {
+    limpaTela();
+    desenhaBorda();
+    printf("     CONSULTAR VENDA\n");
+    desenhaBorda();
+
+    if (total_vendas == 0) {
+        printf("Nenhuma venda registrada.\n");
+        pausar();
+        return;
+    }
+
+    printf("1. Consultar por codigo\n");
+    printf("2. Consultar por data\n");
+    printf("0. Voltar\n");
+    desenhaBorda();
+
+    int opcao = lerInteiro("Escolha o tipo de consulta: ", 0, 2);
+    if (opcao == 0) return;
+
+    if (opcao == 1) {
+        int codigo = lerInteiro("Digite o codigo da venda: ", 1, INT_MAX);
+        int idx = buscarIndiceVendaPorCodigo(vendas, total_vendas, codigo);
+
+        if (idx == -1) {
+            printf("\nVenda %d nao encontrada.\n", codigo);
+        } else {
+            printf("\n");
+            imprimirNotaFiscal(stdout, &vendas[idx]);
+        }
+    } else {
+        char data_busca[TAM_DATA];
+        if (!lerData("Digite a data (DD/MM/AAAA): ", data_busca)) {
+            return;
+        }
+
+        int encontradas = 0;
+        char data_venda[TAM_DATA];
+
+        printf("\nVendas do dia %s:\n", data_busca);
+        for (int i = 0; i < total_vendas; i++) {
+            formatarData(vendas[i].data, data_venda);
+            if (strcmp(data_venda, data_busca) == 0) {
+                if (encontradas == 0) {
+                    imprimirCabecalhoVendas();
+                }
+                imprimirLinhaVenda(&vendas[i]);
+                encontradas++;
+            }
+        }
+
+        if (encontradas == 0) {
+            printf("Nenhuma venda encontrada nessa data.\n");
+        } else {
+            printf("=======================================================================\n");
+            printf("Total encontrado: %d venda(s).\n", encontradas);
+            printf("Use a consulta por codigo para ver a nota completa.\n");
+        }
+    }
+
+    pausar();
+}
+
+// ---------- CANCELAR VENDA ----------
+void cancelarVenda(venda *vendas, int total_vendas, produto *produtos, int total_produtos) {
+    limpaTela();
+    desenhaBorda();
+    printf("       CANCELAR VENDA\n");
+    desenhaBorda();
+
+    if (total_vendas == 0) {
+        printf("Nenhuma venda registrada.\n");
+        pausar();
+        return;
+    }
+
+    int codigo = lerInteiro("Digite o codigo da venda a cancelar: ", 1, INT_MAX);
+    int idx = buscarIndiceVendaPorCodigo(vendas, total_vendas, codigo);
+
+    if (idx == -1) {
+        printf("\nVenda %d nao encontrada.\n", codigo);
+        pausar();
+        return;
+    }
+
+    if (vendas[idx].status == VENDA_CANCELADA) {
+        printf("\nEsta venda ja foi cancelada anteriormente.\n");
+        pausar();
+        return;
+    }
+
+    printf("\n");
+    imprimirNotaFiscal(stdout, &vendas[idx]);
+
+    int confirma = lerInteiro("Tem certeza que deseja cancelar esta venda? (1 - Sim / 2 - Nao): ", 1, 2);
+    if (confirma == 2) {
+        printf("\nCancelamento abortado.\n");
+        pausar();
+        return;
+    }
+
+    // Devolve cada item ao estoque
+    for (int i = 0; i < vendas[idx].contador_itens; i++) {
+        item_venda *it = &vendas[idx].itens[i];
+        int p = buscarIndiceProdutoPorCodigo(produtos, total_produtos, it->codigo_produto);
+
+        if (p == -1) {
+            printf("Aviso: \"%s\" (cod. %d) foi excluido do cadastro; %d un. nao puderam ser devolvidas.\n",
+                   it->nome, it->codigo_produto, it->quantidade);
+        } else if (INT_MAX - produtos[p].qtd_estoque < it->quantidade) {
+            printf("Aviso: devolver %d un. de \"%s\" estouraria o limite do estoque; item nao devolvido.\n",
+                   it->quantidade, it->nome);
+        } else {
+            produtos[p].qtd_estoque += it->quantidade;
+        }
+    }
+
+    vendas[idx].status = VENDA_CANCELADA;
+    printf("\nVenda cancelada e estoque atualizado!\n");
+    pausar();
+}
+
+// ---------- MENU ----------
+void menuVendas(venda **vendas, int *total_vendas, int *capacidade_vendas,
+                produto *produtos, int total_produtos) {
     int opcao;
     do {
         limpaTela();
@@ -728,12 +1168,16 @@ void menuVendas() {
 
         opcao = lerInteiro("Escolha uma opcao: ", 0, 4);
 
-        if (opcao != 0) {
-            printf("Em desenvolvimento\n");
-            pausar();
+        switch (opcao) {
+            case 1: registrarVenda(vendas, total_vendas, capacidade_vendas, produtos, total_produtos); break;
+            case 2: listarVendas(*vendas, *total_vendas); break;
+            case 3: consultarVenda(*vendas, *total_vendas); break;
+            case 4: cancelarVenda(*vendas, *total_vendas, produtos, total_produtos); break;
+            case 0: break;
         }
     } while (opcao != 0);
 }
+
 
 // SUBMENU DA PARTE 2 (SIMPLIFICADO)
 
