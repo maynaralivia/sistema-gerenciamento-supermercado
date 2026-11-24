@@ -800,7 +800,7 @@ int main() {
         switch (opcao) {
             case 1: menuProdutos(&produtos, &total_produtos, &capacidade_produtos); break;
             case 2: menuEstoque(produtos, total_produtos); break;
-            case 3: menuVendas(); break;
+            case 3: menuVendas(&vendas, &total_vendas, &capacidade_vendas, produtos, total_ptodutos); break;
             case 4: menuRelatorios(); break;
             case 5: printf("\nEncerrando o sistema...\n"); break;
         }
