@@ -15,6 +15,9 @@
 #define VENDA_CANCELADA 0
 #define TAM_DATA 11   // "DD/MM/AAAA" = 10 caracteres + '\0'
 #define LIMITE_VALOR_PAGO 1000000000.0
+#define ARQ_PRODUTOS "produtos.txt"
+#define ARQ_VENDAS "vendas.txt"
+#define ARQ_TEMP "temp_dados.tmp" 
 
 typedef struct produto{ 
     int codigo;
@@ -171,6 +174,27 @@ int lerTexto(const char *mensagem, char destino[], int tamanho) {
 }
 
 // FUNCOES COMPARTILHADAS ENTRE AS PARTES
+// Funcao que troca o arquivo definitivo pelo temporario ja completo.
+// No Windows o rename nao sobrescreve, entao remove o antigo e tenta de novo.
+int substituirArquivo(const char *temporario, const char *definitivo) {
+    if (rename(temporario, definitivo) == 0) {
+        return 1;
+    }
+    remove(definitivo);
+    if (rename(temporario, definitivo) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+// Le uma linha do arquivo e tira o \n (e \r) do final. Devolve 0 se acabou o arquivo.
+int lerLinhaArquivo(FILE *f, char *destino, int tamanho) {
+    if (fgets(destino, tamanho, f) == NULL) {
+        return 0;
+    }
+    destino[strcspn(destino, "\r\n")] = '\0';
+    return 1;
+}
 // Retorna o indice do produto no vetor ou -1 se nao encontrar
 int buscarIndiceProdutoPorCodigo(produto *produtos, int total_produtos, int codigo) {
     for (int i = 0; i < total_produtos; i++) {
@@ -260,6 +284,88 @@ void ordenarProdutos(produto *produtos, int total_produtos, int criterio) {
     }
 }
 // PARTE 1 - PRODUTOS E ESTOQUE (PLACEHOLDERS)
+// ARMAZENAMENTO DE PRODUTOS
+// Formato de produtos.txt: 1a linha = total; depois, para cada produto:
+// codigo / nome / categoria / "custo venda estoque minimo"
+int salvarProdutos(const produto *produtos, int total_produtos) {
+    FILE *f = fopen(ARQ_TEMP, "w");
+    if (f == NULL) {
+        printf("Aviso: nao foi possivel salvar os produtos.\n");
+        return 0;
+    }
+
+    fprintf(f, "%d\n", total_produtos);
+    for (int i = 0; i < total_produtos; i++) {
+        fprintf(f, "%d\n%s\n%s\n%.6f %.6f %d %d\n",
+                produtos[i].codigo, produtos[i].nome, produtos[i].categoria,
+                produtos[i].preco_custo, produtos[i].preco_venda,
+                produtos[i].qtd_estoque, produtos[i].estoque_minimo);
+    }
+
+    // so troca o arquivo antigo se o temporario foi gravado por inteiro
+    if (fclose(f) != 0 || !substituirArquivo(ARQ_TEMP, ARQ_PRODUTOS)) {
+        printf("Aviso: falha ao gravar o arquivo de produtos.\n");
+        return 0;
+    }
+    return 1;
+}
+
+// Le um produto do arquivo. Devolve 1 se leu completo, 0 se faltou algo.
+int lerProdutoDoArquivo(FILE *f, produto *p) {
+    char linha[256];
+
+    if (!lerLinhaArquivo(f, linha, sizeof(linha)) || sscanf(linha, "%d", &p->codigo) != 1) return 0;
+    if (!lerLinhaArquivo(f, linha, sizeof(linha))) return 0;
+    snprintf(p->nome, TAM_NOME, "%s", linha);
+    if (!lerLinhaArquivo(f, linha, sizeof(linha))) return 0;
+    snprintf(p->categoria, TAM_CATEGORIA, "%s", linha);
+    if (!lerLinhaArquivo(f, linha, sizeof(linha)) ||
+        sscanf(linha, "%lf %lf %d %d", &p->preco_custo, &p->preco_venda,
+               &p->qtd_estoque, &p->estoque_minimo) != 4) return 0;
+    return 1;
+}
+
+// Carrega os produtos ao iniciar. Se o arquivo nao existe (primeira execucao), comeca vazio.
+// Devolve 1 se esta tudo certo, 0 se houve problema.
+int carregarProdutos(produto **produtos, int *total_produtos, int *capacidade_produtos) {
+    FILE *f = fopen(ARQ_PRODUTOS, "r");
+    if (f == NULL) {
+        return 1;
+    }
+
+    char linha[256];
+    int qtd;
+    if (!lerLinhaArquivo(f, linha, sizeof(linha)) || sscanf(linha, "%d", &qtd) != 1 || qtd < 0) {
+        printf("Aviso: arquivo de produtos invalido. Iniciando sem produtos.\n");
+        fclose(f);
+        return 0;
+    }
+
+    // se o arquivo tem mais produtos que a capacidade atual, aumenta o vetor
+    if (qtd > *capacidade_produtos) {
+        produto *temp = realloc(*produtos, qtd * sizeof(produto));
+        if (temp == NULL) {
+            printf("Erro: memoria insuficiente para carregar os produtos.\n");
+            fclose(f);
+            return 0;
+        }
+        *produtos = temp;
+        *capacidade_produtos = qtd;
+    }
+
+    int lidos = 0;
+    while (lidos < qtd && lerProdutoDoArquivo(f, &(*produtos)[lidos])) {
+        lidos++;
+    }
+    fclose(f);
+
+    *total_produtos = lidos;
+    if (lidos != qtd) {
+        printf("Aviso: arquivo de produtos incompleto (%d de %d lidos).\n", lidos, qtd);
+        return 0;
+    }
+    return 1;
+}
 //funcao responsavel pelo cadastro de produtos no sistema
 void cadastrarProduto(produto **produtos, int *total_produtos, int *capacidade_produtos) {
     limpaTela();
@@ -307,9 +413,10 @@ void cadastrarProduto(produto **produtos, int *total_produtos, int *capacidade_p
     novo.qtd_estoque = lerInteiro("Quantidade inicial em estoque: ", 0, INT_MAX);
     novo.estoque_minimo = lerInteiro("Estoque minimo: ", 0, INT_MAX);
 
-    // 4. Salva na proxima posicao livre e incrementa o total
+        // 4. Salva na proxima posicao livre e incrementa o total
     (*produtos)[*total_produtos] = novo;
     (*total_produtos)++;
+    salvarProdutos(*produtos, *total_produtos);   // <- LINHA NOVA
 
     printf("\nProduto cadastrado com sucesso!\n");
     pausar();
@@ -477,6 +584,7 @@ void alterarProduto(produto *produtos, int total_produtos) {
         }
     } while (opcao != 0);
 
+    salvarProdutos(produtos, total_produtos);     // <- LINHA NOVA
     printf("\nAlteracoes finalizadas.\n");
     pausar();
 }
@@ -519,6 +627,7 @@ void excluirProduto(produto *produtos, int *total_produtos) {
     }
 
     (*total_produtos)--;
+    salvarProdutos(produtos, *total_produtos);    // <- LINHA NOVA
     printf("\nProduto excluido com sucesso!\n");
     pausar();
 }
@@ -558,6 +667,7 @@ void entradaEstoque(produto *produtos, int total_produtos) {
 
     int qtd_entrada = lerInteiro("Quantidade a adicionar: ", 1, espaco_disponivel);
     produtos[idx].qtd_estoque += qtd_entrada;
+    salvarProdutos(produtos, total_produtos);
 
     printf("\nEntrada registrada com sucesso!\n");
     printf("Novo saldo em estoque: %d unidades\n", produtos[idx].qtd_estoque);
@@ -599,6 +709,7 @@ void baixaEstoque(produto *produtos, int total_produtos) {
     // Passar qtd_estoque como maximo impede retirar mais do que ha disponivel
     int qtd_baixa = lerInteiro("Quantidade a retirar: ", 1, produtos[idx].qtd_estoque);
     produtos[idx].qtd_estoque -= qtd_baixa;
+    salvarProdutos(produtos, total_produtos);     
 
     printf("\nBaixa registrada com sucesso!\n");
     printf("Novo saldo em estoque: %d unidades\n", produtos[idx].qtd_estoque);
@@ -712,7 +823,104 @@ void menuEstoque(produto *produtos, int total_produtos) {
     } while (opcao != 0);
 }
 // FUNCOES DA PARTE 2
+// ARMAZENAMENTO DE VENDAS
+// Formato de vendas.txt: 1a linha = total; depois, para cada venda:
+// "codigo data itens status" / "desconto total pago troco" /
+// e para cada item: "codigo quantidade preco_unit preco_custo" / nome / categoria
+int salvarVendas(const venda *vendas, int total_vendas) {
+    FILE *f = fopen(ARQ_TEMP, "w");
+    if (f == NULL) {
+        printf("Aviso: nao foi possivel salvar as vendas.\n");
+        return 0;
+    }
 
+    fprintf(f, "%d\n", total_vendas);
+    for (int i = 0; i < total_vendas; i++) {
+        const venda *v = &vendas[i];
+        fprintf(f, "%d %lld %d %d\n", v->codigo, (long long)v->data, v->contador_itens, v->status);
+        fprintf(f, "%.6f %.6f %.6f %.6f\n", v->desconto, v->valor_total, v->valor_pago, v->troco);
+        for (int j = 0; j < v->contador_itens; j++) {
+            const item_venda *it = &v->itens[j];
+            fprintf(f, "%d %d %.6f %.6f\n%s\n%s\n",
+                    it->codigo_produto, it->quantidade, it->preco_unitario, it->preco_custo,
+                    it->nome, it->categoria);
+        }
+    }
+
+    if (fclose(f) != 0 || !substituirArquivo(ARQ_TEMP, ARQ_VENDAS)) {
+        printf("Aviso: falha ao gravar o arquivo de vendas.\n");
+        return 0;
+    }
+    return 1;
+}
+
+// Le uma venda (com seus itens) do arquivo. Devolve 1 se leu completa, 0 se faltou algo.
+int lerVendaDoArquivo(FILE *f, venda *v) {
+    char linha[256];
+    long long data;
+    memset(v, 0, sizeof(venda));
+
+    if (!lerLinhaArquivo(f, linha, sizeof(linha)) ||
+        sscanf(linha, "%d %lld %d %d", &v->codigo, &data, &v->contador_itens, &v->status) != 4) return 0;
+    v->data = (time_t)data;
+    if (v->contador_itens < 0 || v->contador_itens > MAX_ITENS) return 0;
+
+    if (!lerLinhaArquivo(f, linha, sizeof(linha)) ||
+        sscanf(linha, "%lf %lf %lf %lf", &v->desconto, &v->valor_total,
+               &v->valor_pago, &v->troco) != 4) return 0;
+
+    for (int i = 0; i < v->contador_itens; i++) {
+        item_venda *it = &v->itens[i];
+        if (!lerLinhaArquivo(f, linha, sizeof(linha)) ||
+            sscanf(linha, "%d %d %lf %lf", &it->codigo_produto, &it->quantidade,
+                   &it->preco_unitario, &it->preco_custo) != 4) return 0;
+        if (!lerLinhaArquivo(f, linha, sizeof(linha))) return 0;
+        snprintf(it->nome, TAM_NOME, "%s", linha);
+        if (!lerLinhaArquivo(f, linha, sizeof(linha))) return 0;
+        snprintf(it->categoria, TAM_CATEGORIA, "%s", linha);
+    }
+    return 1;
+}
+
+// Carrega as vendas ao iniciar. Se o arquivo nao existe (primeira execucao), comeca vazio.
+int carregarVendas(venda **vendas, int *total_vendas, int *capacidade_vendas) {
+    FILE *f = fopen(ARQ_VENDAS, "r");
+    if (f == NULL) {
+        return 1;
+    }
+
+    char linha[256];
+    int qtd;
+    if (!lerLinhaArquivo(f, linha, sizeof(linha)) || sscanf(linha, "%d", &qtd) != 1 || qtd < 0) {
+        printf("Aviso: arquivo de vendas invalido. Iniciando sem vendas.\n");
+        fclose(f);
+        return 0;
+    }
+
+    if (qtd > *capacidade_vendas) {
+        venda *temp = realloc(*vendas, qtd * sizeof(venda));
+        if (temp == NULL) {
+            printf("Erro: memoria insuficiente para carregar as vendas.\n");
+            fclose(f);
+            return 0;
+        }
+        *vendas = temp;
+        *capacidade_vendas = qtd;
+    }
+
+    int lidas = 0;
+    while (lidas < qtd && lerVendaDoArquivo(f, &(*vendas)[lidas])) {
+        lidas++;
+    }
+    fclose(f);
+
+    *total_vendas = lidas;
+    if (lidas != qtd) {
+        printf("Aviso: arquivo de vendas incompleto (%d de %d lidas).\n", lidas, qtd);
+        return 0;
+    }
+    return 1;
+}
 // Gera o codigo da proxima venda, maior codigo de venda existente + 1 (continua correto depois de carregar de arquivo)
 int proximoCodigoVenda(venda *vendas, int total_vendas) {
     int maior = 0;
@@ -935,6 +1143,8 @@ void registrarVenda(venda **vendas, int *total_vendas, int *capacidade_vendas,
 
     (*vendas)[*total_vendas] = nova;
     (*total_vendas)++;
+    salvarVendas(*vendas, *total_vendas);         
+    salvarProdutos(produtos, total_produtos);     
 
     printf("\nVenda registrada com sucesso!\n\n");
     imprimirNotaFiscal(stdout, &nova);
@@ -1091,7 +1301,7 @@ void consultarVenda(venda *vendas, int total_vendas) {
     pausar();
 }
 
-// ---------- CANCELAR VENDA ----------
+//funcao para cancelar venda
 void cancelarVenda(venda *vendas, int total_vendas, produto *produtos, int total_produtos) {
     limpaTela();
     desenhaBorda();
@@ -1146,11 +1356,13 @@ void cancelarVenda(venda *vendas, int total_vendas, produto *produtos, int total
     }
 
     vendas[idx].status = VENDA_CANCELADA;
+    salvarVendas(vendas, total_vendas);
+    salvarProdutos(produtos, total_produtos);
     printf("\nVenda cancelada e estoque atualizado!\n");
     pausar();
 }
 
-// ---------- MENU ----------
+//menu vendas
 void menuVendas(venda **vendas, int *total_vendas, int *capacidade_vendas,
                 produto *produtos, int total_produtos) {
     int opcao;
@@ -1225,7 +1437,11 @@ int main() {
         free(produtos);
         return 1;
     }
-
+    int ok_produtos = carregarProdutos(&produtos, &total_produtos, &capacidade_produtos);
+    int ok_vendas = carregarVendas(&vendas, &total_vendas, &capacidade_vendas);
+    if (!ok_produtos || !ok_vendas) {
+        pausar();   // para o aviso nao sumir quando o menu limpar a tela
+    }
     int opcao;
     do {
         limpaTela();
@@ -1246,7 +1462,10 @@ int main() {
             case 2: menuEstoque(produtos, total_produtos); break;
             case 3: menuVendas(&vendas, &total_vendas, &capacidade_vendas, produtos, total_produtos); break;
             case 4: menuRelatorios(); break;
-            case 5: printf("\nEncerrando o sistema...\n"); break;
+            case 5: printf("\nEncerrando o sistema...\n");
+                    salvarProdutos(produtos, total_produtos);
+                    salvarVendas(vendas, total_vendas);
+            break;
         }
     } while (opcao != 5);
 
