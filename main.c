@@ -971,7 +971,8 @@ int carregarVendas(venda **vendas, int *total_vendas, int *capacidade_vendas) {
 
     char linha[256];
     int qtd;
-   printf("Aviso: arquivo de vendas invalido. Iniciando sem vendas.\n");
+    if (!lerLinhaArquivo(f, linha, sizeof(linha)) || sscanf(linha, "%d", &qtd) != 1 || qtd < 0) {
+        printf("Aviso: arquivo de vendas invalido. Iniciando sem vendas.\n");
         fclose(f);
         preservarArquivoCorrompido(ARQ_VENDAS); // PARTE 3
         return 0;
