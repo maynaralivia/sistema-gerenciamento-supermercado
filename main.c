@@ -284,6 +284,77 @@ void ordenarProdutos(produto *produtos, int total_produtos, int criterio) {
     }
 }
 // PARTE 1 - PRODUTOS E ESTOQUE (PLACEHOLDERS)
+// ============================================================================
+// >>> PARTE 3: VALIDACAO DOS DADOS CARREGADOS <<<
+// ============================================================================
+// ----------------------------------------------------------------------------
+// Validacao dos dados lidos do arquivo (o arquivo pode ter sido alterado ou
+// danificado fora do programa; um registro invalido faria o sistema travar).
+// ----------------------------------------------------------------------------
+
+// Garante que o texto termina em '\0' dentro do vetor (evita ler fora dele)
+void garantirFimDeString(char texto[], int tamanho) {
+    texto[tamanho - 1] = '\0'; // a ultima posicao sempre vira o terminador
+}
+
+// Retorna 1 se os campos do produto fazem sentido (>= funciona como filtro de NaN tambem)
+int produtoValido(const produto *p) {
+    return p->codigo >= 1 && p->qtd_estoque >= 0 && p->estoque_minimo >= 0 &&
+           p->preco_custo >= 0.0 && p->preco_venda >= 0.0;
+}
+
+// Retorna 1 se os campos da venda (e de todos os seus itens) fazem sentido
+int vendaValida(const venda *v) {
+    if (v->codigo < 1 || v->contador_itens < 0 || v->contador_itens > MAX_ITENS) return 0;
+    if (v->status != VENDA_CONCLUIDA && v->status != VENDA_CANCELADA) return 0;
+    if (!(v->desconto >= 0.0 && v->desconto <= 100.0)) return 0;
+    if (!(v->valor_total >= 0.0 && v->valor_pago >= 0.0 && v->troco >= 0.0)) return 0;
+
+    for (int i = 0; i < v->contador_itens; i++) {
+        if (v->itens[i].codigo_produto < 1 || v->itens[i].quantidade < 1) return 0;
+        if (!(v->itens[i].preco_unitario >= 0.0 && v->itens[i].preco_custo >= 0.0)) return 0;
+    }
+    return 1;
+}
+
+// Valida todos os produtos carregados e confere se nao ha codigos repetidos
+int validarProdutosCarregados(produto *produtos, int total_produtos) {
+    for (int i = 0; i < total_produtos; i++) {
+        garantirFimDeString(produtos[i].nome, TAM_NOME);
+        garantirFimDeString(produtos[i].categoria, TAM_CATEGORIA);
+        if (!produtoValido(&produtos[i])) return 0;
+        for (int j = 0; j < i; j++) { // codigo unico (requisito do trabalho)
+            if (produtos[j].codigo == produtos[i].codigo) return 0;
+        }
+    }
+    return 1;
+}
+
+// Valida todas as vendas carregadas e confere se nao ha codigos repetidos
+int validarVendasCarregadas(venda *vendas, int total_vendas) {
+    for (int i = 0; i < total_vendas; i++) {
+        for (int j = 0; j < vendas[i].contador_itens && j < MAX_ITENS; j++) {
+            garantirFimDeString(vendas[i].itens[j].nome, TAM_NOME);
+            garantirFimDeString(vendas[i].itens[j].categoria, TAM_CATEGORIA);
+        }
+        if (!vendaValida(&vendas[i])) return 0;
+        for (int j = 0; j < i; j++) {
+            if (vendas[j].codigo == vendas[i].codigo) return 0;
+        }
+    }
+    return 1;
+}
+
+// Renomeia um arquivo com problema para "nome.corrompido".
+// Assim, o salvamento seguinte nao sobrescreve (e nao perde) os dados originais.
+void preservarArquivoCorrompido(const char *nome_arquivo) {
+    char nome_novo[80];
+    snprintf(nome_novo, sizeof(nome_novo), "%s.corrompido", nome_arquivo);
+    remove(nome_novo); // apaga uma copia anterior, se existir
+    if (rename(nome_arquivo, nome_novo) == 0) {
+        printf("O arquivo original foi guardado como \"%s\".\n", nome_novo);
+    }
+}
 // ARMAZENAMENTO DE PRODUTOS
 // Formato de produtos.txt: 1a linha = total; depois, para cada produto:
 // codigo / nome / categoria / "custo venda estoque minimo"
@@ -338,6 +409,7 @@ int carregarProdutos(produto **produtos, int *total_produtos, int *capacidade_pr
     if (!lerLinhaArquivo(f, linha, sizeof(linha)) || sscanf(linha, "%d", &qtd) != 1 || qtd < 0) {
         printf("Aviso: arquivo de produtos invalido. Iniciando sem produtos.\n");
         fclose(f);
+        preservarArquivoCorrompido(ARQ_PRODUTOS); // PARTE 3: nao deixa o proximo salvamento apagar o original
         return 0;
     }
 
@@ -359,11 +431,19 @@ int carregarProdutos(produto **produtos, int *total_produtos, int *capacidade_pr
     }
     fclose(f);
 
-    *total_produtos = lidos;
-    if (lidos != qtd) {
+  if (lidos != qtd) {
         printf("Aviso: arquivo de produtos incompleto (%d de %d lidos).\n", lidos, qtd);
+        preservarArquivoCorrompido(ARQ_PRODUTOS); // PARTE 3: guarda o original
+        *total_produtos = 0;
         return 0;
     }
+    if (!validarProdutosCarregados(*produtos, qtd)) { // PARTE 3: codigos repetidos, valores negativos...
+        printf("Aviso: arquivo de produtos com dados invalidos.\n");
+        preservarArquivoCorrompido(ARQ_PRODUTOS);
+        *total_produtos = 0;
+        return 0;
+    }
+    *total_produtos = qtd;
     return 1;
 }
 //funcao responsavel pelo cadastro de produtos no sistema
@@ -891,9 +971,9 @@ int carregarVendas(venda **vendas, int *total_vendas, int *capacidade_vendas) {
 
     char linha[256];
     int qtd;
-    if (!lerLinhaArquivo(f, linha, sizeof(linha)) || sscanf(linha, "%d", &qtd) != 1 || qtd < 0) {
-        printf("Aviso: arquivo de vendas invalido. Iniciando sem vendas.\n");
+   printf("Aviso: arquivo de vendas invalido. Iniciando sem vendas.\n");
         fclose(f);
+        preservarArquivoCorrompido(ARQ_VENDAS); // PARTE 3
         return 0;
     }
 
@@ -914,11 +994,19 @@ int carregarVendas(venda **vendas, int *total_vendas, int *capacidade_vendas) {
     }
     fclose(f);
 
-    *total_vendas = lidas;
-    if (lidas != qtd) {
+       if (lidas != qtd) {
         printf("Aviso: arquivo de vendas incompleto (%d de %d lidas).\n", lidas, qtd);
+        preservarArquivoCorrompido(ARQ_VENDAS); // PARTE 3
+        *total_vendas = 0;
         return 0;
     }
+    if (!validarVendasCarregadas(*vendas, qtd)) { // PARTE 3
+        printf("Aviso: arquivo de vendas com dados invalidos.\n");
+        preservarArquivoCorrompido(ARQ_VENDAS);
+        *total_vendas = 0;
+        return 0;
+    }
+    *total_vendas = qtd;
     return 1;
 }
 // Gera o codigo da proxima venda, maior codigo de venda existente + 1 (continua correto depois de carregar de arquivo)
@@ -1391,9 +1479,627 @@ void menuVendas(venda **vendas, int *total_vendas, int *capacidade_vendas,
 }
 
 
-// SUBMENU DA PARTE 3 (SIMPLIFICADO)
+// ============================================================================
+// >>> INICIO PARTE 3 (B) - RELATORIOS <<<
+// Fica DEPOIS de lerData()/diasNoMes() e ANTES do menuRelatorios().
+// ============================================================================
 
-void menuRelatorios() {
+// Nomes dos arquivos de relatorio (sobrescritos a cada geracao)
+#define ARQ_REL_ESTOQUE "relatorio_estoque.txt"          // relatorio 1
+#define ARQ_REL_ESTOQUE_BAIXO "relatorio_estoque_baixo.txt" // relatorio 2
+#define ARQ_REL_RANKING "relatorio_ranking.txt"          // relatorio 3
+#define ARQ_REL_FATURAMENTO "relatorio_faturamento.txt"  // relatorio 4
+#define ARQ_REL_LUCRO "relatorio_lucro.txt"              // relatorio 5
+#define ARQ_REL_CATEGORIA "relatorio_categoria_dia.txt"  // relatorio 6
+
+// Uma linha do ranking de mais vendidos (soma das quantidades de um produto)
+typedef struct item_ranking{
+    int codigo;          // codigo do produto
+    char nome[TAM_NOME]; // nome do produto (copiado do item da venda)
+    long long quantidade;// total de unidades vendidas (long long evita estouro do int)
+}item_ranking;
+
+// Uma linha da tabela "categoria x dia da semana"
+typedef struct linha_categoria{
+    char categoria[TAM_CATEGORIA]; // nome da categoria
+    long long por_dia[7];          // unidades vendidas por dia (0 = domingo ... 6 = sabado)
+    long long total;               // total de unidades da categoria
+}linha_categoria;
+
+// ============================================================================
+// FUNCOES AUXILIARES DOS RELATORIOS
+// Cada relatorio e escrito por uma funcao que recebe um FILE *saida.
+// Chamando-a com stdout ele aparece na tela; chamando-a com um arquivo ele e salvo.
+// ============================================================================
+
+// Desenha uma linha de '=' (na tela ou no arquivo) com a largura informada
+void desenhaLinhaRelatorio(FILE *saida, int largura) {
+    for (int i = 0; i < largura; i++) {
+        fputc('=', saida); // escreve um caractere '=' por vez
+    }
+    fputc('\n', saida);
+}
+
+// Escreve o cabecalho padrao: borda, titulo e data de geracao
+void cabecalhoRelatorio(FILE *saida, const char *titulo) {
+    char data[TAM_DATA];
+    formatarData(time(NULL), data); // time(NULL) = data/hora de agora
+    desenhaLinhaRelatorio(saida, 27);
+    fprintf(saida, "  %s\n", titulo);
+    fprintf(saida, "  Gerado em: %s\n", data);
+    desenhaLinhaRelatorio(saida, 27);
+}
+
+// Abre o arquivo do relatorio para escrita; mostra erro e devolve NULL se falhar
+FILE *abrirArquivoRelatorio(const char *nome_arquivo) {
+    FILE *arq = fopen(nome_arquivo, "w"); // "w" = texto, apaga o conteudo anterior
+    if (arq == NULL) {
+        printf("\nErro: nao foi possivel criar o arquivo \"%s\".\n", nome_arquivo);
+    }
+    return arq;
+}
+
+// Fecha o arquivo do relatorio e informa se foi salvo corretamente
+void finalizarRelatorio(FILE *arq, const char *nome_arquivo) {
+    int erro = ferror(arq); // houve erro em alguma escrita?
+    if (fclose(arq) != 0 || erro) {
+        printf("\nErro: falha ao gravar o arquivo \"%s\".\n", nome_arquivo);
+    } else {
+        printf("\nRelatorio salvo no arquivo: %s\n", nome_arquivo);
+    }
+}
+
+// Quantos itens de uma venda sao validos (protege contra contador fora do limite)
+int contarItensValidos(venda v) {
+    if (v.contador_itens < 0) return 0;
+    if (v.contador_itens > MAX_ITENS) return MAX_ITENS;
+    return v.contador_itens;
+}
+
+// Converte uma data "DD/MM/AAAA" (ja validada pela lerData) em time_t.
+// fim_do_dia = 0 usa 00:00:00 (inicio do periodo); fim_do_dia = 1 usa 23:59:59.
+// Retorna 1 se converteu e 0 se a data esta fora do intervalo que o sistema suporta.
+int dataParaTimeT(const char *data, int fim_do_dia, time_t *destino) {
+    int dia, mes, ano;
+    if (sscanf(data, "%d/%d/%d", &dia, &mes, &ano) != 3) { // separa dia, mes e ano
+        return 0;
+    }
+
+    struct tm info;
+    memset(&info, 0, sizeof(info)); // zera todos os campos da struct
+    info.tm_mday = dia;
+    info.tm_mon = mes - 1;     // tm_mon vai de 0 a 11
+    info.tm_year = ano - 1900; // tm_year conta a partir de 1900
+    info.tm_hour = fim_do_dia ? 23 : 0;
+    info.tm_min = fim_do_dia ? 59 : 0;
+    info.tm_sec = fim_do_dia ? 59 : 0;
+    info.tm_isdst = -1;        // deixa o sistema decidir sobre horario de verao
+
+    time_t t = mktime(&info);  // converte struct tm em time_t
+    if (t == (time_t)-1) {
+        printf("Erro: data fora do intervalo suportado pelo sistema.\n");
+        return 0;
+    }
+
+    *destino = t;
+    return 1;
+}
+
+// ============================================================================
+// RELATORIO 1 - QUANTIDADE DE PRODUTOS E VALOR TOTAL EM ESTOQUE
+// ============================================================================
+void escreverRelatorioEstoque(FILE *saida, produto *produtos, int total_produtos) {
+    long long total_unidades = 0;  // soma das unidades em estoque
+    int com_estoque = 0;           // produtos com pelo menos 1 unidade
+    double valor_custo = 0.0;      // estoque avaliado pelo preco de custo
+    double valor_venda = 0.0;      // estoque avaliado pelo preco de venda
+
+    for (int i = 0; i < total_produtos; i++) {
+        if (produtos[i].qtd_estoque > 0) { // so conta produtos disponiveis
+            com_estoque++;
+            total_unidades += produtos[i].qtd_estoque;
+            valor_custo += produtos[i].qtd_estoque * produtos[i].preco_custo;
+            valor_venda += produtos[i].qtd_estoque * produtos[i].preco_venda;
+        }
+    }
+
+    cabecalhoRelatorio(saida, "RELATORIO DE ESTOQUE");
+    fprintf(saida, "Produtos cadastrados:             %d\n", total_produtos);
+    fprintf(saida, "Produtos disponiveis em estoque:  %d\n", com_estoque);
+    fprintf(saida, "Total de unidades em estoque:     %lld\n", total_unidades);
+    fprintf(saida, "Valor do estoque (preco custo):   R$ %.2f\n", valor_custo);
+    fprintf(saida, "Valor do estoque (preco venda):   R$ %.2f\n", valor_venda);
+    desenhaLinhaRelatorio(saida, 27);
+}
+
+void relatorioEstoque(produto *produtos, int total_produtos) {
+    limpaTela();
+    escreverRelatorioEstoque(stdout, produtos, total_produtos); // mostra na tela
+
+    FILE *arq = abrirArquivoRelatorio(ARQ_REL_ESTOQUE);
+    if (arq != NULL) {
+        escreverRelatorioEstoque(arq, produtos, total_produtos); // salva no arquivo
+        finalizarRelatorio(arq, ARQ_REL_ESTOQUE);
+    }
+    pausar();
+}
+
+// ============================================================================
+// RELATORIO 2 - PRODUTOS COM ESTOQUE BAIXO OU ZERADO
+// ============================================================================
+void escreverRelatorioEstoqueBaixo(FILE *saida, produto *produtos, int total_produtos) {
+    cabecalhoRelatorio(saida, "ESTOQUE BAIXO OU ZERADO");
+    int encontrados = 0;
+
+    fprintf(saida, "===========================================================================\n");
+    fprintf(saida, "%-6s | %-25s | %-15s | %-7s | %-7s | %-8s\n",
+            "COD", "NOME", "CATEGORIA", "ATUAL", "MINIMO", "SITUACAO");
+    fprintf(saida, "===========================================================================\n");
+
+    for (int i = 0; i < total_produtos; i++) {
+        if (produtos[i].qtd_estoque <= produtos[i].estoque_minimo) { // inferior ou igual ao minimo
+            const char *situacao = (produtos[i].qtd_estoque == 0) ? "ZERADO" : "BAIXO";
+            fprintf(saida, "%-6d | %-25.25s | %-15.15s | %7d | %7d | %-8s\n",
+                    produtos[i].codigo, produtos[i].nome, produtos[i].categoria,
+                    produtos[i].qtd_estoque, produtos[i].estoque_minimo, situacao);
+            encontrados++;
+        }
+    }
+
+    fprintf(saida, "===========================================================================\n");
+    if (encontrados == 0) {
+        fprintf(saida, "Nenhum produto esta com estoque baixo ou zerado.\n");
+    } else {
+        fprintf(saida, "Total de produtos precisando de reposicao: %d\n", encontrados);
+    }
+}
+
+void relatorioEstoqueBaixo(produto *produtos, int total_produtos) {
+    limpaTela();
+    escreverRelatorioEstoqueBaixo(stdout, produtos, total_produtos);
+
+    FILE *arq = abrirArquivoRelatorio(ARQ_REL_ESTOQUE_BAIXO);
+    if (arq != NULL) {
+        escreverRelatorioEstoqueBaixo(arq, produtos, total_produtos);
+        finalizarRelatorio(arq, ARQ_REL_ESTOQUE_BAIXO);
+    }
+    pausar();
+}
+
+// ============================================================================
+// RELATORIO 3 - RANKING DOS PRODUTOS MAIS VENDIDOS (ORDEM DECRESCENTE)
+// ============================================================================
+// Soma as quantidades vendidas de cada produto (apenas vendas concluidas) e ordena.
+// Usa os dados guardados nos itens da venda, entao funciona mesmo se o produto
+// tiver sido excluido do cadastro depois. Retorna 0 se faltar memoria.
+int montarRanking(venda *vendas, int total_vendas, item_ranking **ranking, int *total_ranking) {
+    *ranking = NULL;
+    *total_ranking = 0;
+
+    long long total_itens = 0; // maximo de linhas distintas possiveis
+    for (int i = 0; i < total_vendas; i++) {
+        if (vendas[i].status == VENDA_CONCLUIDA) {
+            total_itens += contarItensValidos(vendas[i]);
+        }
+    }
+    if (total_itens == 0) {
+        return 1; // nada vendido ainda: ranking vazio (nao e erro)
+    }
+
+    item_ranking *lista = malloc((size_t)total_itens * sizeof(item_ranking));
+    if (lista == NULL) {
+        return 0; // sem memoria
+    }
+    int quantidade_lista = 0;
+
+    for (int i = 0; i < total_vendas; i++) {
+        if (vendas[i].status != VENDA_CONCLUIDA) continue; // cancelada nao conta
+
+        for (int j = 0; j < contarItensValidos(vendas[i]); j++) {
+            item_venda item = vendas[i].itens[j];
+
+            int pos = -1; // procura o produto na lista
+            for (int k = 0; k < quantidade_lista; k++) {
+                if (lista[k].codigo == item.codigo_produto) {
+                    pos = k;
+                    break;
+                }
+            }
+            if (pos == -1) { // primeira vez que aparece: cria a linha
+                pos = quantidade_lista;
+                lista[pos].codigo = item.codigo_produto;
+                snprintf(lista[pos].nome, TAM_NOME, "%s", item.nome);
+                lista[pos].quantidade = 0;
+                quantidade_lista++;
+            }
+            lista[pos].quantidade += item.quantidade;
+        }
+    }
+
+    // Selection Sort decrescente por quantidade (sem funcoes prontas de ordenacao)
+    for (int i = 0; i < quantidade_lista - 1; i++) {
+        int indice_maior = i;
+        for (int j = i + 1; j < quantidade_lista; j++) {
+            if (lista[j].quantidade > lista[indice_maior].quantidade ||
+                (lista[j].quantidade == lista[indice_maior].quantidade &&
+                 lista[j].codigo < lista[indice_maior].codigo)) { // empate: menor codigo primeiro
+                indice_maior = j;
+            }
+        }
+        if (indice_maior != i) {
+            item_ranking temp = lista[i];
+            lista[i] = lista[indice_maior];
+            lista[indice_maior] = temp;
+        }
+    }
+
+    *ranking = lista;
+    *total_ranking = quantidade_lista;
+    return 1;
+}
+
+void escreverRelatorioRanking(FILE *saida, item_ranking *ranking, int total_ranking) {
+    cabecalhoRelatorio(saida, "RANKING MAIS VENDIDOS");
+
+    if (total_ranking == 0) {
+        fprintf(saida, "Nenhuma venda concluida registrada.\n");
+        return;
+    }
+
+    fprintf(saida, "=====================================================\n");
+    fprintf(saida, "%-4s | %-6s | %-25s | %-10s\n", "POS", "COD", "NOME", "QTD VENDIDA");
+    fprintf(saida, "=====================================================\n");
+    for (int i = 0; i < total_ranking; i++) {
+        fprintf(saida, "%-4d | %-6d | %-25.25s | %11lld\n",
+                i + 1, ranking[i].codigo, ranking[i].nome, ranking[i].quantidade);
+    }
+    fprintf(saida, "=====================================================\n");
+}
+
+void relatorioRanking(venda *vendas, int total_vendas) {
+    limpaTela();
+    item_ranking *ranking = NULL;
+    int total_ranking = 0;
+
+    if (!montarRanking(vendas, total_vendas, &ranking, &total_ranking)) {
+        printf("Erro: memoria insuficiente para gerar o ranking.\n");
+        pausar();
+        return;
+    }
+
+    escreverRelatorioRanking(stdout, ranking, total_ranking);
+
+    FILE *arq = abrirArquivoRelatorio(ARQ_REL_RANKING);
+    if (arq != NULL) {
+        escreverRelatorioRanking(arq, ranking, total_ranking);
+        finalizarRelatorio(arq, ARQ_REL_RANKING);
+    }
+
+    free(ranking); // libera a memoria (free(NULL) e permitido)
+    pausar();
+}
+
+// ============================================================================
+// RELATORIO 4 - TOTAL DE VENDAS E FATURAMENTO POR DIA / PERIODO
+// ============================================================================
+void escreverRelatorioFaturamento(FILE *saida, venda *vendas, int total_vendas,
+                                  time_t inicio, time_t fim) {
+    char data_inicial[TAM_DATA], data_final[TAM_DATA], data_dia[TAM_DATA];
+    formatarData(inicio, data_inicial);
+    formatarData(fim, data_final);
+
+    cabecalhoRelatorio(saida, "FATURAMENTO POR PERIODO");
+    fprintf(saida, "Periodo: %s a %s\n", data_inicial, data_final);
+    fprintf(saida, "=====================================================\n");
+    fprintf(saida, "%-12s | %-8s | %-14s\n", "DATA", "VENDAS", "FATURAMENTO");
+    fprintf(saida, "=====================================================\n");
+
+    int total_concluidas = 0, total_canceladas = 0; // contadores do periodo
+    double faturamento_total = 0.0;
+
+    // Percorre o periodo dia a dia, comecando em 00:00:00 do dia inicial
+    struct tm dia_info = *localtime(&inicio); // copia a struct (localtime reaproveita o mesmo espaco)
+    dia_info.tm_hour = 0;
+    dia_info.tm_min = 0;
+    dia_info.tm_sec = 0;
+    dia_info.tm_isdst = -1;
+    time_t inicio_dia = mktime(&dia_info);
+
+    while (inicio_dia != (time_t)-1 && inicio_dia <= fim) {
+        struct tm prox_info = dia_info;
+        prox_info.tm_mday += 1;  // dia seguinte (mktime ajusta fim de mes/ano sozinho)
+        prox_info.tm_isdst = -1;
+        time_t prox_dia = mktime(&prox_info);
+        if (prox_dia == (time_t)-1) break; // protege contra erro de conversao
+
+        int concluidas_dia = 0;
+        double faturamento_dia = 0.0;
+
+        for (int i = 0; i < total_vendas; i++) {
+            if (vendas[i].data >= inicio_dia && vendas[i].data < prox_dia) { // venda caiu neste dia
+                if (vendas[i].status == VENDA_CONCLUIDA) {
+                    concluidas_dia++;
+                    faturamento_dia += vendas[i].valor_total;
+                } else {
+                    total_canceladas++;
+                }
+            }
+        }
+
+        if (concluidas_dia > 0) { // so imprime dias que tiveram venda
+            formatarData(inicio_dia, data_dia);
+            fprintf(saida, "%-12s | %8d | R$ %11.2f\n", data_dia, concluidas_dia, faturamento_dia);
+        }
+        total_concluidas += concluidas_dia;
+        faturamento_total += faturamento_dia;
+
+        dia_info = prox_info; // avanca para o proximo dia
+        inicio_dia = prox_dia;
+    }
+
+    fprintf(saida, "=====================================================\n");
+    if (total_concluidas == 0) {
+        fprintf(saida, "Nenhuma venda concluida no periodo.\n");
+    }
+    fprintf(saida, "Vendas concluidas:  %d\n", total_concluidas);
+    fprintf(saida, "Vendas canceladas:  %d\n", total_canceladas);
+    fprintf(saida, "Faturamento total:  R$ %.2f\n", faturamento_total);
+    if (total_concluidas > 0) {
+        fprintf(saida, "Ticket medio:       R$ %.2f\n", faturamento_total / total_concluidas);
+    }
+    fprintf(saida, "=====================================================\n");
+}
+
+void relatorioFaturamento(venda *vendas, int total_vendas) {
+    limpaTela();
+    desenhaBorda();
+    printf("  FATURAMENTO POR PERIODO\n");
+    desenhaBorda();
+    printf("Para ver um unico dia, use a mesma data nas duas perguntas.\n\n");
+
+    char texto_data[TAM_DATA]; // lerData devolve a data como texto "DD/MM/AAAA"
+    time_t inicio, fim;
+
+    do { // repete ate a data inicial ser convertida com sucesso
+        if (!lerData("Data inicial (DD/MM/AAAA): ", texto_data)) return;
+    } while (!dataParaTimeT(texto_data, 0, &inicio));
+
+    int periodo_ok;
+    do { // repete ate a data final ser valida e igual ou posterior a inicial
+        periodo_ok = 0;
+        if (!lerData("Data final   (DD/MM/AAAA): ", texto_data)) return;
+        if (dataParaTimeT(texto_data, 1, &fim)) {
+            if (fim < inicio) {
+                printf("Erro: a data final nao pode ser anterior a data inicial.\n");
+            } else {
+                periodo_ok = 1;
+            }
+        }
+    } while (!periodo_ok);
+
+    limpaTela();
+    escreverRelatorioFaturamento(stdout, vendas, total_vendas, inicio, fim);
+
+    FILE *arq = abrirArquivoRelatorio(ARQ_REL_FATURAMENTO);
+    if (arq != NULL) {
+        escreverRelatorioFaturamento(arq, vendas, total_vendas, inicio, fim);
+        finalizarRelatorio(arq, ARQ_REL_FATURAMENTO);
+    }
+    pausar();
+}
+
+// ============================================================================
+// RELATORIO 5 - LUCRO ESTIMADO DAS VENDAS
+// lucro = (soma qtd x preco de venda) - desconto% - (soma qtd x preco de custo)
+// ============================================================================
+void escreverRelatorioLucro(FILE *saida, venda *vendas, int total_vendas) {
+    cabecalhoRelatorio(saida, "LUCRO ESTIMADO DAS VENDAS");
+
+    int total_concluidas = 0;
+    double soma_bruto = 0.0, soma_desconto = 0.0, soma_custo = 0.0, soma_lucro = 0.0;
+    char data[TAM_DATA];
+
+    fprintf(saida, "=================================================================\n");
+    fprintf(saida, "%-6s | %-10s | %10s | %10s | %10s | %10s\n",
+            "VENDA", "DATA", "BRUTO", "DESCONTO", "CUSTO", "LUCRO");
+    fprintf(saida, "=================================================================\n");
+
+    for (int i = 0; i < total_vendas; i++) {
+        if (vendas[i].status != VENDA_CONCLUIDA) continue; // cancelada nao gera lucro
+
+        double bruto = 0.0, custo = 0.0;
+        for (int j = 0; j < contarItensValidos(vendas[i]); j++) {
+            bruto += vendas[i].itens[j].quantidade * vendas[i].itens[j].preco_unitario;
+            custo += vendas[i].itens[j].quantidade * vendas[i].itens[j].preco_custo;
+        }
+        double valor_desconto = bruto * vendas[i].desconto / 100.0; // desconto e percentual
+        double lucro = bruto - valor_desconto - custo;
+
+        formatarData(vendas[i].data, data);
+        fprintf(saida, "%-6d | %-10s | %10.2f | %10.2f | %10.2f | %10.2f\n",
+                vendas[i].codigo, data, bruto, valor_desconto, custo, lucro);
+
+        total_concluidas++;
+        soma_bruto += bruto;
+        soma_desconto += valor_desconto;
+        soma_custo += custo;
+        soma_lucro += lucro;
+    }
+
+    fprintf(saida, "=================================================================\n");
+    if (total_concluidas == 0) {
+        fprintf(saida, "Nenhuma venda concluida registrada.\n");
+        return;
+    }
+    fprintf(saida, "Vendas consideradas: %d\n", total_concluidas);
+    fprintf(saida, "Receita bruta:       R$ %.2f\n", soma_bruto);
+    fprintf(saida, "Descontos:           R$ %.2f\n", soma_desconto);
+    fprintf(saida, "Custo dos produtos:  R$ %.2f\n", soma_custo);
+    fprintf(saida, "Lucro estimado:      R$ %.2f\n", soma_lucro);
+    if (soma_bruto > 0.0) {
+        fprintf(saida, "Margem sobre a receita bruta: %.2f%%\n", soma_lucro / soma_bruto * 100.0); // %% imprime '%'
+    }
+}
+
+void relatorioLucro(venda *vendas, int total_vendas) {
+    limpaTela();
+    escreverRelatorioLucro(stdout, vendas, total_vendas);
+
+    FILE *arq = abrirArquivoRelatorio(ARQ_REL_LUCRO);
+    if (arq != NULL) {
+        escreverRelatorioLucro(arq, vendas, total_vendas);
+        finalizarRelatorio(arq, ARQ_REL_LUCRO);
+    }
+    pausar();
+}
+
+// ============================================================================
+// RELATORIO 6 - UNIDADES VENDIDAS POR CATEGORIA E DIA DA SEMANA
+// + CATEGORIA COM MAIOR QUANTIDADE DE UNIDADES VENDIDAS
+// ============================================================================
+// Monta a tabela (apenas vendas concluidas), ordenada por total decrescente.
+// Retorna 0 se faltar memoria.
+int montarTabelaCategorias(venda *vendas, int total_vendas, linha_categoria **tabela, int *total_categorias) {
+    *tabela = NULL;
+    *total_categorias = 0;
+
+    long long total_itens = 0;
+    for (int i = 0; i < total_vendas; i++) {
+        if (vendas[i].status == VENDA_CONCLUIDA) {
+            total_itens += contarItensValidos(vendas[i]);
+        }
+    }
+    if (total_itens == 0) {
+        return 1;
+    }
+
+    linha_categoria *lista = malloc((size_t)total_itens * sizeof(linha_categoria));
+    if (lista == NULL) {
+        return 0;
+    }
+    int quantidade_lista = 0;
+
+    for (int i = 0; i < total_vendas; i++) {
+        if (vendas[i].status != VENDA_CONCLUIDA) continue;
+
+        int dia = diaDaSemana(vendas[i].data); // 0 a 6
+        if (dia < 0 || dia > 6) continue;      // protecao extra
+
+        for (int j = 0; j < contarItensValidos(vendas[i]); j++) {
+            item_venda item = vendas[i].itens[j];
+
+            int pos = -1; // procura a categoria (ignorando maiusculas/minusculas)
+            for (int k = 0; k < quantidade_lista; k++) {
+                if (compararStringsSemCase(lista[k].categoria, item.categoria) == 0) {
+                    pos = k;
+                    break;
+                }
+            }
+            if (pos == -1) { // categoria nova: cria a linha zerada
+                pos = quantidade_lista;
+                snprintf(lista[pos].categoria, TAM_CATEGORIA, "%s", item.categoria);
+                for (int d = 0; d < 7; d++) {
+                    lista[pos].por_dia[d] = 0;
+                }
+                lista[pos].total = 0;
+                quantidade_lista++;
+            }
+            lista[pos].por_dia[dia] += item.quantidade;
+            lista[pos].total += item.quantidade;
+        }
+    }
+
+    // Selection Sort decrescente por total (a 1a linha sera a categoria lider)
+    for (int i = 0; i < quantidade_lista - 1; i++) {
+        int indice_maior = i;
+        for (int j = i + 1; j < quantidade_lista; j++) {
+            if (lista[j].total > lista[indice_maior].total) {
+                indice_maior = j;
+            }
+        }
+        if (indice_maior != i) {
+            linha_categoria temp = lista[i];
+            lista[i] = lista[indice_maior];
+            lista[indice_maior] = temp;
+        }
+    }
+
+    *tabela = lista;
+    *total_categorias = quantidade_lista;
+    return 1;
+}
+
+void escreverRelatorioCategoria(FILE *saida, linha_categoria *tabela, int total_categorias) {
+    const char *nomes_dias[7] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"};
+
+    cabecalhoRelatorio(saida, "VENDAS POR CATEGORIA/DIA");
+
+    if (total_categorias == 0) {
+        fprintf(saida, "Nenhuma venda concluida registrada.\n");
+        return;
+    }
+
+    fprintf(saida, "=========================================================================\n");
+    fprintf(saida, "%-20s", "CATEGORIA");
+    for (int d = 0; d < 7; d++) {
+        fprintf(saida, " | %5s", nomes_dias[d]);
+    }
+    fprintf(saida, " | %7s\n", "TOTAL");
+    fprintf(saida, "=========================================================================\n");
+
+    for (int i = 0; i < total_categorias; i++) {
+        fprintf(saida, "%-20.20s", tabela[i].categoria);
+        for (int d = 0; d < 7; d++) {
+            fprintf(saida, " | %5lld", tabela[i].por_dia[d]);
+        }
+        fprintf(saida, " | %7lld\n", tabela[i].total);
+    }
+    fprintf(saida, "=========================================================================\n");
+
+    // Como a tabela esta ordenada, a 1a linha e a lider; varre para detectar empates
+    long long maior_total = tabela[0].total;
+    int lideres = 0;
+    for (int i = 0; i < total_categorias; i++) {
+        if (tabela[i].total == maior_total) lideres++;
+    }
+    if (lideres == 1) {
+        fprintf(saida, "Categoria mais vendida: %s (%lld unidades)\n", tabela[0].categoria, maior_total);
+    } else {
+        fprintf(saida, "Empate entre %d categorias com %lld unidades cada:\n", lideres, maior_total);
+        for (int i = 0; i < total_categorias; i++) {
+            if (tabela[i].total == maior_total) fprintf(saida, " - %s\n", tabela[i].categoria);
+        }
+    }
+}
+
+void relatorioCategoriaDiaSemana(venda *vendas, int total_vendas) {
+    limpaTela();
+    linha_categoria *tabela = NULL;
+    int total_categorias = 0;
+
+    if (!montarTabelaCategorias(vendas, total_vendas, &tabela, &total_categorias)) {
+        printf("Erro: memoria insuficiente para gerar o relatorio.\n");
+        pausar();
+        return;
+    }
+
+    escreverRelatorioCategoria(stdout, tabela, total_categorias);
+
+    FILE *arq = abrirArquivoRelatorio(ARQ_REL_CATEGORIA);
+    if (arq != NULL) {
+        escreverRelatorioCategoria(arq, tabela, total_categorias);
+        finalizarRelatorio(arq, ARQ_REL_CATEGORIA);
+    }
+
+    free(tabela);
+    pausar();
+}
+
+// ----------------------------------------------------------------------------
+// MENU DE RELATORIOS (substitui o menuRelatorios() simplificado)
+// Agora recebe os vetores de produtos e vendas.
+// ----------------------------------------------------------------------------
+void menuRelatorios(produto *produtos, int total_produtos, venda *vendas, int total_vendas) {
     int opcao;
     do {
         limpaTela();
@@ -1411,12 +2117,22 @@ void menuRelatorios() {
 
         opcao = lerInteiro("Escolha uma opcao: ", 0, 6);
 
-        if (opcao != 0) {
-            printf("Em desenvolvimento\n");
-            pausar();
+        switch (opcao) {
+            case 1: relatorioEstoque(produtos, total_produtos); break;
+            case 2: relatorioEstoqueBaixo(produtos, total_produtos); break;
+            case 3: relatorioRanking(vendas, total_vendas); break;
+            case 4: relatorioFaturamento(vendas, total_vendas); break;
+            case 5: relatorioLucro(vendas, total_vendas); break;
+            case 6: relatorioCategoriaDiaSemana(vendas, total_vendas); break;
+            case 0: break;
         }
     } while (opcao != 0);
 }
+
+// ============================================================================
+// >>> FIM PARTE 3 (B) <<<
+// ============================================================================
+
 // FUNCAO PRINCIPAL
 int main() {
     int total_produtos = 0;
@@ -1461,7 +2177,7 @@ int main() {
             case 1: menuProdutos(&produtos, &total_produtos, &capacidade_produtos); break;
             case 2: menuEstoque(produtos, total_produtos); break;
             case 3: menuVendas(&vendas, &total_vendas, &capacidade_vendas, produtos, total_produtos); break;
-            case 4: menuRelatorios(); break;
+            case 4: menuRelatorios(produtos, total_produtos, vendas, total_vendas); break;
             case 5: printf("\nEncerrando o sistema...\n");
                     salvarProdutos(produtos, total_produtos);
                     salvarVendas(vendas, total_vendas);
